@@ -34,7 +34,6 @@ Requirements:
 
 import os
 import sys
-import argparse
 
 # Add show-o2 directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -212,11 +211,13 @@ def main():
     # Get tokenizer
     try:
         print(f"\n📝 Initializing tokenizer from: {config.model.showo.llm_model_path}")
+        llm_model_path = config.model.showo.llm_model_path
+        llm_name = path_to_llm_name.get(llm_model_path, 'qwen2_5')
         text_tokenizer, showo_token_ids = get_text_tokenizer(
-            config.model.showo.llm_model_path,
+            llm_model_path,
             add_showo_tokens=True,
             return_showo_token_ids=True,
-            llm_name=path_to_llm_name.get(config.model.showo.llm_model_path, 'qwen2_5')
+            llm_name=llm_name
         )
         config.model.showo.llm_vocab_size = len(text_tokenizer)
         print(f"✓ Tokenizer initialized with vocabulary size: {len(text_tokenizer)}")
@@ -239,9 +240,10 @@ def main():
             model = Showo2Qwen2_5(**config.model.showo)
             
             # Load checkpoint if specified
-            if hasattr(config, 'model_path') and config.model_path:
-                print(f"   Loading weights from: {config.model_path}")
-                state_dict = load_state_dict(config.model_path)
+            model_path = getattr(config, 'model_path', None)
+            if model_path:
+                print(f"   Loading weights from: {model_path}")
+                state_dict = load_state_dict(model_path)
                 model.load_state_dict(state_dict)
         
         model.to(device)

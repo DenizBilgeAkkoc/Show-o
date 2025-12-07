@@ -51,15 +51,10 @@ Before running these scripts, ensure you have:
    
    Or install minimal requirements:
    ```bash
-   pip install torch transformers einops timm omegaconf
+   pip install torch transformers einops timm omegaconf diffusers accelerate
    ```
 
-2. **Downloaded the VAE model** (if loading from pretrained):
-   ```bash
-   wget https://huggingface.co/Wan-AI/Wan2.1-T2V-14B/resolve/main/Wan2.1_VAE.pth
-   ```
-
-3. **HuggingFace access** (if loading from HuggingFace):
+2. **HuggingFace access** (if loading from HuggingFace):
    - The scripts will automatically download model weights from HuggingFace
    - Ensure you have internet connection
    - Some models may require HuggingFace authentication

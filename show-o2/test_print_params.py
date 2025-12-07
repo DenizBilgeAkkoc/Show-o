@@ -132,8 +132,19 @@ def main():
         
         # This will download the base LLM and vision models
         print("\n⚠️  Note: This will download base models (Qwen2.5-1.5B and SigLIP)...")
-        print("Press Ctrl+C to cancel, or wait for downloads to complete...\n")
+        print("This may take several minutes and require ~2-3 GB of downloads.")
         
+        try:
+            response = input("\nProceed with download? [y/N]: ").strip().lower()
+            if response not in ['y', 'yes']:
+                print("Operation cancelled by user.")
+                print("\nTo run without downloads, try: python show_model_structure.py")
+                return
+        except (EOFError, KeyboardInterrupt):
+            print("\n\nOperation cancelled by user.")
+            return
+        
+        print("\nDownloading and initializing model...\n")
         model = Showo2Qwen2_5(**model_config)
         model.eval()
         

@@ -181,22 +181,25 @@ def main():
     print("Loading Show-o2 model...")
     print()
     
-    # Get configuration
-    # Use a demo config file if available, otherwise use default parameters
-    config_file = "configs/showo2_1.5b_demo_432x432.yaml"
-    if not os.path.exists(config_file):
-        print(f"Warning: Config file {config_file} not found. Using default parameters.")
-        config = None
-    else:
+    # Get configuration from command line
+    # Usage: python script.py config=path/to/config.yaml
+    try:
         config = get_config()
+        print(f"✓ Configuration loaded")
+    except Exception as e:
+        print(f"Warning: Could not load config from command line: {e}")
+        print("Usage: python print_trainable_params.py config=configs/showo2_1.5b_demo_432x432.yaml")
+        config = None
     
     if config is not None:
         # Load model with config
+        llm_model_path = config.model.showo.llm_model_path
+        llm_name = path_to_llm_name.get(llm_model_path, 'qwen2_5')
         text_tokenizer, showo_token_ids = get_text_tokenizer(
-            config.model.showo.llm_model_path,
+            llm_model_path,
             add_showo_tokens=True,
             return_showo_token_ids=True,
-            llm_name=path_to_llm_name[config.model.showo.llm_model_path]
+            llm_name=llm_name
         )
         config.model.showo.llm_vocab_size = len(text_tokenizer)
         

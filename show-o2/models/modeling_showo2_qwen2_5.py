@@ -25,6 +25,22 @@ from .modeling_utils import ConfigMixin, ModelMixin, register_to_config
 from .modules import DiffusionHeadConfig
 from .modules import ModulatedAttentionBlock, RMSNorm, PatchEmbed, TimestepEmbedder, FinalLayer
 from .qwen2 import Qwen2ForCausalLM
+from .lora import (
+    LoRAConfig,
+    inject_lora,
+    prepare_model_for_lora_training,
+    get_lora_parameters,
+    get_lora_state_dict,
+    load_lora_state_dict,
+    save_lora_weights,
+    load_lora_weights,
+    merge_lora_weights,
+    unmerge_lora_weights,
+    enable_lora,
+    disable_lora,
+    print_lora_summary,
+    count_lora_parameters,
+)
 
 
 class Showo2Qwen2_5(ModelMixin, ConfigMixin):
@@ -141,6 +157,143 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
         nn.init.constant_(self.diffusion_head_b.adaLN_modulation[-1].bias, 0)
         nn.init.constant_(self.diffusion_head_b.linear.weight, 0)
         nn.init.constant_(self.diffusion_head_b.linear.bias, 0)
+
+    def enable_lora_finetuning(
+        self,
+        lora_config: LoRAConfig = None,
+        r: int = 8,
+        lora_alpha: int = 16,
+        lora_dropout: float = 0.0,
+        target_modules: list = None,
+        bias: str = "none",
+        use_rslora: bool = False,
+    ):
+        """
+        Enable LoRA fine-tuning on the LLM backbone (Qwen2).
+
+        This method:
+        1. Freezes all model parameters
+        2. Injects LoRA layers into the specified target modules of the LLM backbone
+        3. Only LoRA parameters will be trainable
+
+        Args:
+            lora_config: LoRAConfig object. If provided, other arguments are ignored.
+            r: Rank of LoRA decomposition. Default is 8.
+            lora_alpha: Scaling factor for LoRA. Default is 16.
+            lora_dropout: Dropout probability for LoRA layers. Default is 0.0.
+            target_modules: List of module names to apply LoRA to.
+                Default is ["q_proj", "k_proj", "v_proj", "o_proj"] (attention only).
+                Can include ["gate_proj", "up_proj", "down_proj"] for MLP layers.
+            bias: Bias training mode. Options: "none", "all", "lora_only". Default is "none".
+            use_rslora: Whether to use RS-LoRA scaling. Default is False.
+
+        Returns:
+            self: The model with LoRA enabled.
+
+        Example:
+            >>> model = Showo2Qwen2_5.from_pretrained(...)
+            >>> model.enable_lora_finetuning(r=16, lora_alpha=32)
+            >>> # Now only LoRA parameters are trainable
+            >>> optimizer = torch.optim.AdamW(model.get_lora_parameters(), lr=1e-4)
+        """
+        if lora_config is None:
+            if target_modules is None:
+                target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+            lora_config = LoRAConfig(
+                r=r,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                target_modules=target_modules,
+                bias=bias,
+                use_rslora=use_rslora,
+            )
+
+        # Prepare model for LoRA training (freeze all, inject LoRA)
+        prepare_model_for_lora_training(
+            self,
+            lora_config,
+            llm_backbone_prefix="showo.model",
+        )
+
+        # Store config for reference
+        self._lora_config = lora_config
+
+        return self
+
+    def get_lora_parameters(self):
+        """
+        Get all trainable LoRA parameters.
+
+        Returns:
+            List of LoRA parameters for optimizer.
+        """
+        return get_lora_parameters(self)
+
+    def get_lora_state_dict(self):
+        """
+        Get state dict containing only LoRA weights.
+
+        Returns:
+            State dict with only LoRA parameters.
+        """
+        return get_lora_state_dict(self)
+
+    def save_lora_weights(self, path: str):
+        """
+        Save LoRA weights to a file.
+
+        Args:
+            path: Path to save the weights.
+        """
+        save_lora_weights(self, path)
+
+    def load_lora_weights(self, path: str, strict: bool = True):
+        """
+        Load LoRA weights from a file.
+
+        Args:
+            path: Path to load the weights from.
+            strict: Whether to raise error for missing/unexpected keys.
+        """
+        load_lora_weights(self, path, strict=strict)
+
+    def merge_lora(self):
+        """
+        Merge LoRA weights into original layers for inference efficiency.
+
+        After merging, the model can be used like a normal model without
+        the LoRA overhead. Call unmerge_lora() to restore LoRA layers.
+        """
+        merge_lora_weights(self)
+
+    def unmerge_lora(self):
+        """
+        Unmerge LoRA weights from original layers.
+
+        This restores the separate LoRA layers after merging.
+        """
+        unmerge_lora_weights(self)
+
+    def enable_lora_layers(self):
+        """Enable LoRA adaptation (use LoRA + original weights)."""
+        enable_lora(self)
+
+    def disable_lora_layers(self):
+        """Disable LoRA adaptation (use only original weights)."""
+        disable_lora(self)
+
+    def print_lora_summary(self):
+        """Print a summary of LoRA configuration and parameters."""
+        print_lora_summary(self)
+
+    def count_lora_parameters(self):
+        """
+        Count LoRA and total parameters.
+
+        Returns:
+            Dictionary with parameter counts.
+        """
+        return count_lora_parameters(self)
 
     def unpatchify(self, x, h, w, T=0):
         """

@@ -1,0 +1,111 @@
+# LoRA Fine-tuning Configuration for Show-o2
+#
+# This configuration demonstrates how to fine-tune the LLM backbone
+# using LoRA (Low-Rank Adaptation). Only LoRA parameters are trained,
+# making this extremely memory efficient.
+#
+# Example usage:
+#   python train_lora.py --config configs/showo2_lora_finetune.yaml
+#
+#   # With overrides:
+#   python train_lora.py --config configs/showo2_lora_finetune.yaml \
+#       lora.r=16 lora.lora_alpha=32 training.batch_size=4
+
+wandb:
+  enabled: false
+  entity: null
+  resume: 'auto'
+
+experiment:
+  project: "showo2-lora-finetune"
+  name: "showo2-1.5b-lora"
+  output_dir: "outputs/showo2-1.5b-lora"
+  save_every: 1000
+  log_every: 50
+
+# LoRA Configuration
+# Only the LLM backbone (Qwen2) will have LoRA applied
+lora:
+  # Rank of LoRA decomposition. Higher = more parameters but better expressivity.
+  # Typical values: 4, 8, 16, 32, 64
+  r: 8
+
+  # Scaling factor. The actual scaling is lora_alpha/r.
+  # Higher values mean LoRA has more influence.
+  lora_alpha: 16
+
+  # Dropout probability for LoRA layers. Helps prevent overfitting.
+  lora_dropout: 0.05
+
+  # Target modules in the LLM backbone to apply LoRA.
+  # Default: attention projections only (most efficient)
+  # Add MLP modules for more capacity: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+
+  # Bias training: "none" (default), "all", or "lora_only"
+  bias: "none"
+
+  # Use RS-LoRA scaling (scales by sqrt(r) instead of r)
+  # Can improve training stability for higher ranks
+  use_rslora: false
+
+model:
+  vae_model:
+    type: "wan21"
+    pretrained_model_path: "Wan2.1_VAE.pth"
+
+  showo:
+    # Path to pretrained Show-o2 model
+    pretrained_model_path: "path/to/showo2_pretrained"
+    use_safetensors: true
+
+    # These are used if loading from scratch (not pretrained)
+    llm_model_path: "Qwen/Qwen2.5-1.5B-Instruct"
+    hidden_size: 1536
+    image_latent_dim: 16
+    image_latent_height: 27
+    image_latent_width: 27
+    patch_size: 2
+    num_diffusion_layers: 10
+    clip_latent_dim: 1152
+    add_qk_norm: true
+    add_time_embeds: true
+
+  gradient_checkpointing: true
+
+dataset:
+  num_workers: 4
+  pin_memory: true
+
+optimizer:
+  name: adamw
+  params:
+    # Learning rate for LoRA fine-tuning
+    # LoRA typically uses higher learning rates than full fine-tuning
+    learning_rate: 1e-4
+    beta1: 0.9
+    beta2: 0.999
+    weight_decay: 0.01
+    epsilon: 1e-8
+
+lr_scheduler:
+  scheduler: "cosine"
+  params:
+    warmup_steps: 100
+
+training:
+  gradient_accumulation_steps: 4
+  batch_size: 2
+  mixed_precision: "bf16"
+  enable_tf32: true
+  seed: 42
+  max_train_steps: 10000
+  max_grad_norm: 1.0
+  num_train_samples: 10000  # For dummy dataset, replace with your actual dataset size
+
+# Whether to save the merged model (LoRA weights merged into base model)
+save_merged_model: false

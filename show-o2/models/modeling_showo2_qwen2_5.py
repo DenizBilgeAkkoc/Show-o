@@ -110,6 +110,44 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
     def _set_gradient_checkpointing(self, module, value=False):
         self.gradient_checkpointing = True
 
+    def enable_showo_lora(self, r=16, alpha=32, dropout=0.05, target_modules=None):
+        """
+        Enable LoRA (Low-Rank Adaptation) on the Qwen LLM backbone only.
+        
+        Args:
+            r: LoRA rank (default: 16)
+            alpha: LoRA alpha scaling factor (default: 32)
+            dropout: LoRA dropout probability (default: 0.05)
+            target_modules: List of module names to apply LoRA to. If None, defaults to
+                           attention and MLP projection layers.
+        
+        Returns:
+            self for method chaining
+        """
+        from peft import LoraConfig, TaskType, get_peft_model
+
+        if target_modules is None:
+            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+        lora_cfg = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=r,
+            lora_alpha=alpha,
+            lora_dropout=dropout,
+            bias="none",
+            target_modules=target_modules,
+        )
+
+        # Wrap ONLY the Qwen LLM backbone with LoRA
+        self.showo = get_peft_model(self.showo, lora_cfg)
+
+        # Freeze Qwen base weights, keep LoRA trainable
+        for n, p in self.showo.named_parameters():
+            if "lora_" not in n.lower():
+                p.requires_grad = False
+
+        return self
+
     def reset_parameters(self):
 
         # Initialize image embedders

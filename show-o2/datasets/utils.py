@@ -68,8 +68,8 @@ def format_sequence_gen_qwen2_5(text_tokens, system_tokens, bos_id, eos_id, boi_
 
     text_labels = text_labels + [-100] * (max_seq_len - len(text_labels))
     text_tokens = text_tokens + [pad_id] * (max_seq_len - len(text_tokens))
-    text_tokens = torch.tensor(text_tokens)
-    text_labels = torch.tensor(text_labels)
+    text_tokens = torch.tensor(text_tokens, dtype=torch.long)
+    text_labels = torch.tensor(text_labels, dtype=torch.long)
 
     text_mask = torch.where((text_tokens != img_pad_id) & (text_tokens != pad_id),
                             torch.ones_like(text_tokens), torch.zeros_like(text_tokens))
@@ -90,8 +90,8 @@ def format_sequence_und(text_tokens, bos_id, eos_id, boi_id, eoi_id, pad_id, img
 
     text_labels = text_labels + [-100] * (max_seq_len - len(text_labels))
     text_tokens = text_tokens + [pad_id] * (max_seq_len - len(text_tokens))
-    text_tokens = torch.tensor(text_tokens)
-    text_labels = torch.tensor(text_labels)
+    text_tokens = torch.tensor(text_tokens, dtype=torch.long)
+    text_labels = torch.tensor(text_labels, dtype=torch.long)
 
     text_mask = torch.where((text_tokens != img_pad_id) & (text_tokens != pad_id),
                             torch.ones_like(text_tokens), torch.zeros_like(text_tokens))
@@ -140,8 +140,8 @@ def format_interleaved_sequence(image_list, text_token_list, bos_id, eos_id, boi
 
     text_labels = text_labels + [-100] * (max_seq_len - len(text_labels))
     text_tokens = text_tokens + [pad_id] * (max_seq_len - len(text_tokens))
-    text_tokens = torch.tensor(text_tokens)
-    text_labels = torch.tensor(text_labels)
+    text_tokens = torch.tensor(text_tokens, dtype=torch.long)
+    text_labels = torch.tensor(text_labels, dtype=torch.long)
 
     if len(modality_positions) < max_num_images:
         modality_positions += [(0, 0) for _ in range(max_num_images - len(modality_positions))]

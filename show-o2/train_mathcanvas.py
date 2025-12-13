@@ -181,9 +181,33 @@ def main():
         total_params = sum(p.numel() for p in model.parameters())
         logger.info(f"LoRA enabled: {trainable_params:,} trainable params / {total_params:,} total ({100 * trainable_params / total_params:.2f}%)")
 
-    # Choose layers to freeze (skip if LoRA is enabled as it handles freezing)
-    if lora_config is None or not lora_config.get('enabled', False):
+    # When LoRA is enabled:
+    # - LoRA already freezes the base showo (Qwen) weights 
+    # - Keep LoRA adapters trainable
+    # - Keep other components (embedders, projectors, output_blocks) trainable
+    if lora_config is not None and lora_config.get('enabled', False):
+        # Log what's trainable
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in model.parameters())
+        logger.info(f"With LoRA + other components: {trainable_params:,} trainable ({100 * trainable_params / total_params:.2f}%)")
+    else:
+        # Choose layers to freeze for non-LoRA training
         _freeze_params(model, config.model.showo.frozen_params)
+
+    # Enable gradient checkpointing to reduce memory usage
+    # Use use_reentrant=False which works correctly with frozen inputs (LoRA)
+    if config.model.get('gradient_checkpointing', True):
+        logger.info("Enabling gradient checkpointing (use_reentrant=False)")
+        gradient_checkpointing_kwargs = {"use_reentrant": False}
+        if hasattr(model, 'showo'):
+            # For LoRA-wrapped model, access the underlying Qwen model
+            if hasattr(model.showo, 'get_base_model'):
+                model.showo.get_base_model().gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
+            elif hasattr(model.showo, 'gradient_checkpointing_enable'):
+                model.showo.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
+        # Also enable for und_trans if it has the method
+        if hasattr(model, 'und_trans') and hasattr(model.und_trans, 'gradient_checkpointing_enable'):
+            model.und_trans.gradient_checkpointing_enable()
 
     preproc_config = config.dataset.preprocessing
     dataset_config = config.dataset.params
@@ -245,9 +269,9 @@ def main():
     include_solution_images = mathcanvas_config.get('include_solution_images', True)
 
     if parquet_path is None:
-        raise ValueError("MathCanvas parquet_path must be specified in config.dataset.mathcanvas.parquet_path")
+        raise ValueError("MathCanvas parquet_path must be specified in config.dataset.mathcanvas.parquet_path (can be a file, directory, or list of files)")
 
-    logger.info(f"Loading MathCanvas dataset from {parquet_path}")
+    logger.info(f"Loading MathCanvas dataset from: {parquet_path}")
 
     if use_iterable:
         dataset = MathCanvasIterableDataset(

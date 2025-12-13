@@ -20,9 +20,11 @@ Based on the MathCanvas-Instruct dataset from the paper:
 """
 
 import collections
+import glob
+import os
 import random
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pyarrow.parquet as pq
 import torch
@@ -36,7 +38,7 @@ class MathCanvasDataset(Dataset):
 
     def __init__(
             self,
-            parquet_path: str,
+            parquet_path: Union[str, List[str]],
             text_tokenizer: Any,
             max_seq_len: int = 3840,
             image_size: int = 384,
@@ -54,7 +56,8 @@ class MathCanvasDataset(Dataset):
         """Initializes the MathCanvas dataset.
 
         Args:
-            parquet_path: Path to the parquet file containing the dataset.
+            parquet_path: Path to the parquet file, a directory containing parquet files,
+                         or a list of parquet file paths.
             text_tokenizer: Tokenizer for text processing.
             max_seq_len: Maximum sequence length.
             image_size: Size to which images are resized.
@@ -91,22 +94,29 @@ class MathCanvasDataset(Dataset):
         self.parquet_path = parquet_path
         self.samples: List[Dict[str, Any]] = []
 
-        # Load the parquet file metadata first
-        self.pf = pq.ParquetFile(parquet_path)
-        self.num_row_groups = self.pf.metadata.num_row_groups
+        # Resolve parquet paths: handle single file, directory, or list of files
+        self.parquet_files = self._resolve_parquet_paths(parquet_path)
         
-        # Build an index of (row_group_idx, row_idx_within_group) for random access
-        self._index = []
+        # Load all parquet file handles and build combined index
+        self._parquet_files_handles: List[pq.ParquetFile] = []
+        self._index = []  # List of (file_idx, row_group_idx, row_idx_within_group)
         self._row_group_cache = {}
-        self._cached_rg_idx = -1
+        self._cached_key = (-1, -1)  # (file_idx, rg_idx)
         
-        for rg_idx in range(self.num_row_groups):
-            rg_metadata = self.pf.metadata.row_group(rg_idx)
-            num_rows = rg_metadata.num_rows
-            for row_idx in range(num_rows):
-                self._index.append((rg_idx, row_idx))
+        total_row_groups = 0
+        for file_idx, pq_path in enumerate(self.parquet_files):
+            pf = pq.ParquetFile(pq_path)
+            self._parquet_files_handles.append(pf)
+            num_row_groups = pf.metadata.num_row_groups
+            total_row_groups += num_row_groups
+            
+            for rg_idx in range(num_row_groups):
+                rg_metadata = pf.metadata.row_group(rg_idx)
+                num_rows = rg_metadata.num_rows
+                for row_idx in range(num_rows):
+                    self._index.append((file_idx, rg_idx, row_idx))
         
-        print(f"MathCanvas dataset loaded. {len(self._index)} samples across {self.num_row_groups} row groups!")
+        print(f"MathCanvas dataset loaded. {len(self._index)} samples across {len(self.parquet_files)} files and {total_row_groups} row groups!")
 
         self.flag_tokens = self.text_tokenizer(
             "Mathematical reasoning with visual chain-of-thought.", add_special_tokens=False
@@ -353,16 +363,51 @@ class MathCanvasDataset(Dataset):
     def __len__(self) -> int:
         return len(self._index)
 
+    def _resolve_parquet_paths(self, parquet_path: Union[str, List[str]]) -> List[str]:
+        """Resolve parquet path(s) to a list of parquet file paths.
+        
+        Args:
+            parquet_path: Can be:
+                - A single parquet file path
+                - A directory containing parquet files
+                - A list of parquet file paths
+                
+        Returns:
+            List of parquet file paths sorted alphabetically.
+        """
+        if isinstance(parquet_path, list):
+            # Already a list of paths
+            paths = parquet_path
+        elif os.path.isdir(parquet_path):
+            # Directory containing parquet files - search recursively
+            paths = glob.glob(os.path.join(parquet_path, '**', '*.parquet'), recursive=True)
+            if not paths:
+                # Also try non-recursive
+                paths = glob.glob(os.path.join(parquet_path, '*.parquet'))
+        else:
+            # Single file path
+            paths = [parquet_path]
+        
+        if not paths:
+            raise ValueError(f"No parquet files found at {parquet_path}")
+        
+        # Sort for deterministic ordering
+        paths = sorted(paths)
+        print(f"Found {len(paths)} parquet file(s)")
+        return paths
+
     def _get_row(self, idx: int) -> Dict[str, Any]:
-        """Get a row from the parquet file using cached row group loading."""
-        rg_idx, row_idx = self._index[idx]
+        """Get a row from the parquet files using cached row group loading."""
+        file_idx, rg_idx, row_idx = self._index[idx]
         
         # Check if we need to load a new row group
-        if self._cached_rg_idx != rg_idx:
+        cache_key = (file_idx, rg_idx)
+        if self._cached_key != cache_key:
             # Read the row group to pandas (one row group at a time to handle nested data)
-            table = self.pf.read_row_group(rg_idx)
+            pf = self._parquet_files_handles[file_idx]
+            table = pf.read_row_group(rg_idx)
             self._row_group_cache = table.to_pydict()
-            self._cached_rg_idx = rg_idx
+            self._cached_key = cache_key
         
         # Extract the row from the cached data
         row = {}
@@ -453,12 +498,13 @@ class MathCanvasDataset(Dataset):
 class MathCanvasIterableDataset(torch.utils.data.IterableDataset):
     """Iterable version of MathCanvas dataset for large parquet files.
     
-    This version streams data from the parquet file instead of loading all into memory.
+    This version streams data from the parquet file(s) instead of loading all into memory.
+    Supports multiple parquet files from a directory.
     """
 
     def __init__(
             self,
-            parquet_path: str,
+            parquet_path: Union[str, List[str]],
             text_tokenizer: Any,
             max_seq_len: int = 3840,
             image_size: int = 384,
@@ -474,7 +520,12 @@ class MathCanvasIterableDataset(torch.utils.data.IterableDataset):
             include_solution_images: bool = True,
             shuffle: bool = True,
     ) -> None:
-        """Initialize the iterable MathCanvas dataset."""
+        """Initialize the iterable MathCanvas dataset.
+        
+        Args:
+            parquet_path: Path to the parquet file, a directory containing parquet files,
+                         or a list of parquet file paths.
+        """
         super().__init__()
         
         self.parquet_path = parquet_path
@@ -498,12 +549,25 @@ class MathCanvasIterableDataset(torch.utils.data.IterableDataset):
         self.include_solution_images = include_solution_images
         self.shuffle = shuffle
         
-        # Get parquet file info
-        self.pf = pq.ParquetFile(parquet_path)
-        self.num_row_groups = self.pf.metadata.num_row_groups
-        self.total_rows = self.pf.metadata.num_rows
+        # Resolve parquet paths: handle single file, directory, or list of files
+        self.parquet_files = self._resolve_parquet_paths(parquet_path)
         
-        print(f"MathCanvas iterable dataset initialized. {self.total_rows} samples across {self.num_row_groups} row groups!")
+        # Build a combined index of (file_idx, row_group_idx) for iteration
+        self._file_row_group_pairs = []  # List of (file_path, row_group_idx)
+        self.total_rows = 0
+        self.total_row_groups = 0
+        
+        for pq_path in self.parquet_files:
+            pf = pq.ParquetFile(pq_path)
+            num_row_groups = pf.metadata.num_row_groups
+            self.total_rows += pf.metadata.num_rows
+            self.total_row_groups += num_row_groups
+            
+            for rg_idx in range(num_row_groups):
+                self._file_row_group_pairs.append((pq_path, rg_idx))
+        
+        print(f"MathCanvas iterable dataset initialized. {self.total_rows} samples across "
+              f"{len(self.parquet_files)} files and {self.total_row_groups} row groups!")
 
         self.flag_tokens = self.text_tokenizer(
             "Mathematical reasoning with visual chain-of-thought.", add_special_tokens=False
@@ -528,6 +592,39 @@ class MathCanvasIterableDataset(torch.utils.data.IterableDataset):
                                 ) // max_num_images
 
         self.min_res = min_res if min_res is not None else (256, 256)
+
+    def _resolve_parquet_paths(self, parquet_path: Union[str, List[str]]) -> List[str]:
+        """Resolve parquet path(s) to a list of parquet file paths.
+        
+        Args:
+            parquet_path: Can be:
+                - A single parquet file path
+                - A directory containing parquet files
+                - A list of parquet file paths
+                
+        Returns:
+            List of parquet file paths sorted alphabetically.
+        """
+        if isinstance(parquet_path, list):
+            # Already a list of paths
+            paths = parquet_path
+        elif os.path.isdir(parquet_path):
+            # Directory containing parquet files - search recursively
+            paths = glob.glob(os.path.join(parquet_path, '**', '*.parquet'), recursive=True)
+            if not paths:
+                # Also try non-recursive
+                paths = glob.glob(os.path.join(parquet_path, '*.parquet'))
+        else:
+            # Single file path
+            paths = [parquet_path]
+        
+        if not paths:
+            raise ValueError(f"No parquet files found at {parquet_path}")
+        
+        # Sort for deterministic ordering
+        paths = sorted(paths)
+        print(f"Found {len(paths)} parquet file(s)")
+        return paths
 
     def _get_pil_image(self, image_data: Dict) -> Image.Image:
         """Convert image data from parquet to PIL Image."""
@@ -730,26 +827,28 @@ class MathCanvasIterableDataset(torch.utils.data.IterableDataset):
             return None
 
     def __iter__(self):
-        """Iterate over the parquet file row groups."""
+        """Iterate over all parquet files and their row groups."""
         worker_info = torch.utils.data.get_worker_info()
         
-        if worker_info is None:
-            # Single worker
-            row_groups = list(range(self.num_row_groups))
-        else:
-            # Multiple workers - split row groups
-            per_worker = self.num_row_groups // worker_info.num_workers
+        # Get list of (file_path, row_group_idx) pairs for this worker
+        all_pairs = self._file_row_group_pairs.copy()
+        
+        if worker_info is not None:
+            # Multiple workers - split the pairs among workers
+            total_pairs = len(all_pairs)
+            per_worker = total_pairs // worker_info.num_workers
             worker_id = worker_info.id
             start = worker_id * per_worker
-            end = start + per_worker if worker_id < worker_info.num_workers - 1 else self.num_row_groups
-            row_groups = list(range(start, end))
+            end = start + per_worker if worker_id < worker_info.num_workers - 1 else total_pairs
+            all_pairs = all_pairs[start:end]
         
         if self.shuffle:
-            random.shuffle(row_groups)
+            random.shuffle(all_pairs)
         
-        for rg_idx in row_groups:
+        for pq_path, rg_idx in all_pairs:
             try:
-                df = self.pf.read_row_group(rg_idx).to_pandas()
+                pf = pq.ParquetFile(pq_path)
+                df = pf.read_row_group(rg_idx).to_pandas()
                 indices = list(range(len(df)))
                 if self.shuffle:
                     random.shuffle(indices)
@@ -760,7 +859,7 @@ class MathCanvasIterableDataset(torch.utils.data.IterableDataset):
                     if result is not None:
                         yield result
             except Exception as e:
-                print(f"Error reading row group {rg_idx}: {e}")
+                print(f"Error reading file {pq_path} row group {rg_idx}: {e}")
                 continue
 
     def collate_fn(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:

@@ -51,7 +51,7 @@ class ShowoSemanticLayers(ModelMixin, ConfigMixin):
         self.reset_parameters()
 
         # initialize semantic layers from siglip
-        siglip_model = SiglipModel.from_pretrained("google/siglip-so400m-patch14-384")
+        siglip_model = SiglipModel.from_pretrained("google/siglip-so400m-patch14-384", low_cpu_mem_usage=False)
         self.position_embedding = siglip_model.vision_model.embeddings.position_embedding
         self.und_trans = siglip_model.vision_model.encoder
         del self.und_trans.layers[-1]

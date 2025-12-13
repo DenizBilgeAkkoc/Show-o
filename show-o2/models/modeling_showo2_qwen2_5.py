@@ -54,9 +54,12 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
 
         llm_config = AutoConfig.from_pretrained(llm_model_path)
         if load_from_showo:
-            self.showo = Qwen2ForCausalLM(llm_config)
+            # Create model without meta tensors to avoid load_state_dict warnings
+            llm_config._attn_implementation = 'sdpa'
+            with torch.device('cpu'):
+                self.showo = Qwen2ForCausalLM(llm_config)
         else:
-            self.showo = Qwen2ForCausalLM.from_pretrained(llm_model_path, attn_implementation='sdpa')
+            self.showo = Qwen2ForCausalLM.from_pretrained(llm_model_path, attn_implementation='sdpa', low_cpu_mem_usage=False)
         self.showo.resize_token_embeddings(llm_vocab_size)
 
         # patch embedding layer for semantic layers
@@ -74,7 +77,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
         )
 
         # initialize semantic layers from siglip
-        siglip_model = SiglipModel.from_pretrained(clip_pretrained_model_path)
+        siglip_model = SiglipModel.from_pretrained(clip_pretrained_model_path, low_cpu_mem_usage=False)
         self.position_embedding = siglip_model.vision_model.embeddings.position_embedding
         self.und_trans = siglip_model.vision_model.encoder
         del self.und_trans.layers[-1]
@@ -139,14 +142,20 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
         )
 
         # Wrap ONLY the Qwen LLM backbone with LoRA
+        # Note: get_peft_model automatically freezes base model parameters
         self.showo = get_peft_model(self.showo, lora_cfg)
-
-        # Freeze Qwen base weights, keep LoRA trainable
-        for n, p in self.showo.named_parameters():
-            if "lora_" not in n.lower():
-                p.requires_grad = False
+        self._lora_enabled = True
 
         return self
+
+    def _get_embed_tokens(self, tokens):
+        """Get embeddings for tokens, handling both LoRA-wrapped and non-wrapped models."""
+        if hasattr(self, '_lora_enabled') and self._lora_enabled:
+            # LoRA-wrapped: use get_base_model() to access the original Qwen2ForCausalLM
+            return self.showo.get_base_model().model.embed_tokens(tokens)
+        else:
+            # Non-LoRA: direct access
+            return self.showo.model.embed_tokens(tokens)
 
     def reset_parameters(self):
 
@@ -212,7 +221,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             **kwargs,
     ):
         T = 0
-        input_embeds = self.showo.model.embed_tokens(text_tokens)
+        input_embeds = self._get_embed_tokens(text_tokens)
         dtype = input_embeds.dtype
         if len(image_latents.shape) != 4:
             b, c, T, h, w = image_latents.shape
@@ -316,7 +325,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             return logits
         else:
             # multimoidal understanding and generatiopn
-            input_embeds = self.showo.model.embed_tokens(text_tokens)
+            input_embeds = self._get_embed_tokens(text_tokens)
             dtype = input_embeds.dtype
             if len(image_latents.shape) != 4:
                 b, c, T, h, w = image_latents.shape
@@ -603,7 +612,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             idx_next = torch.multinomial(probs, num_samples=1)
             result.append(idx_next[0][0])
             # append sampled index to the running sequence and continue
-            idx_next_embeds = self.showo.model.embed_tokens(idx_next)
+            idx_next_embeds = self._get_embed_tokens(idx_next)
             input_embeds = torch.cat([input_embeds, idx_next_embeds], dim=1).to(dtype)
 
             if eos_token is not None and idx_next.cpu() == eos_token:

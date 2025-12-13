@@ -1235,9 +1235,10 @@ class SiglipModel(SiglipPreTrainedModel):
         text_config = config.text_config
         vision_config = config.vision_config
 
-        # First, initialize the text and vision models with proper attention implementation
-        text_model = SiglipTextModel._from_config(text_config)
-        vision_model = SiglipVisionModel._from_config(vision_config)
+        # Initialize text and vision models on CPU to avoid meta tensor warnings
+        with torch.device('cpu'):
+            text_model = SiglipTextModel(text_config)
+            vision_model = SiglipVisionModel(vision_config)
 
         # Second, get the text and vision submodules (for backward compatibility)
         self.text_model = text_model.text_model

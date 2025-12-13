@@ -2,17 +2,17 @@ wandb:
   entity: null
   resume: 'auto'
 
-# MathCanvas training config for visual chain-of-thought mathematical reasoning
+# MathCanvas training config for Show-o2 7B with Qwen2.5-7B backbone
 
 experiment:
     project: "showo2-mathcanvas"
-    name: "showo2-1.5b-mathcanvas-432x432"
-    output_dir: "showo2-1.5b-mathcanvas-432x432"
+    name: "showo2-7b-mathcanvas-lora"
+    output_dir: "showo2-7b-mathcanvas-lora"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000
     max_train_examples_mmu: null
-    save_every: 2000
-    generate_every: 1000
+    save_every: 10000
+    generate_every: 5000
     log_every: 50
     log_grad_norm_every: 500
     resume_from_checkpoint: 'latest'
@@ -25,12 +25,12 @@ model:
     showo:
         model_name: "Showo2"
         load_from_showo: True
-        pretrained_model_path: "showlab/show-o2-1.5B"
-        llm_model_path: "Qwen/Qwen2.5-1.5B-Instruct"
+        pretrained_model_path: "showlab/show-o2-7B"  # 7B model
+        llm_model_path: "Qwen/Qwen2.5-7B-Instruct"   # 7B backbone
         llm_vocab_size: null
-        hidden_size: 1536
+        hidden_size: 3584  # 7B hidden size (larger than 1.5B's 1536)
         image_latent_dim: 16
-        image_latent_height: 27  # Match pre-trained Show-o2 (27*16=432)
+        image_latent_height: 27  # Match SigLIP position embeddings
         image_latent_width: 27
         hq_image_latent_height: 64
         hq_image_latent_width: 64
@@ -41,15 +41,15 @@ model:
         clip_latent_dim: 1152
         add_qk_norm: True
         add_time_embeds: True
-        frozen_params: null  # With LoRA: only freeze base showo weights, keep embedders/projectors trainable
+        frozen_params: null  # With LoRA: keep embedders/projectors trainable
         params_not_load: null
-        # LoRA configuration for efficient fine-tuning
+        # LoRA configuration - optimized for 7B model
         lora:
             enabled: True
-            r: 16                # LoRA rank
-            alpha: 32            # LoRA alpha scaling factor
-            dropout: 0.05        # LoRA dropout probability
-            target_modules: null # null = default: q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
+            r: 32               # Higher rank for 7B model
+            alpha: 64           # 2x rank is common
+            dropout: 0.05
+            target_modules: null # default: q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
 
     clip:
         pretrained_model_path: "google/siglip-so400m-patch14-384"
@@ -63,17 +63,12 @@ dataset:
     
     # MathCanvas specific parameters
     mathcanvas:
-        # Path to the MathCanvas parquet file
-        parquet_path: "/path/to/MathCanvas-Instruct-PlaneGeometry/plane_geometry.parquet"
-        # Whether to use the iterable dataset (for very large files)
+        parquet_path: "/path/to/MathCanvas-Instruct/all_data.parquet"
         use_iterable: False
-        # Include question images in the interleaved sequence
         include_question_images: True
-        # Include solution images (visual chain-of-thought)
         include_solution_images: True
     
     params:
-        # These are fallback paths if not using MathCanvas
         train_mixed_modal_shards_path_or_url: null
         annotation_path: null
         is_clip_encoder: False
@@ -81,18 +76,18 @@ dataset:
         add_caption_prompt: True
         validation_prompts_file: "prompts/t2i_prompts.txt"
         shuffle_buffer_size: 1000
-        num_workers: 6
+        num_workers: 8  # More workers for larger dataset
         pin_memory: True
         persistent_workers: True
 
     preprocessing:
         max_seq_length: 1280
         max_hq_seq_length: 5120
-        max_mixed_modal_seq_length: 5120  # Larger for math reasoning
+        max_mixed_modal_seq_length: 4096  # Slightly reduced for memory
         resolution: 432  # Match 27*16 VAE latent
         mixed_modal_resolution: 432
         hq_resolution: 1024
-        num_t2i_image_tokens: 729  # 27x27 latent (must match SigLIP position embedding)
+        num_t2i_image_tokens: 729  # 27x27 (match SigLIP)
         num_mmu_image_tokens: 729
         num_hq_image_tokens: 4096
         num_mixed_modal_tokens: 729
@@ -110,18 +105,18 @@ dataset:
 optimizer:
     name: adamw
     params:
-        learning_rate: 0.0001
+        learning_rate: 0.00005  # Lower LR for larger model
         scale_lr: False
         beta1: 0.9
         beta2: 0.999
-        weight_decay: 0.0
+        weight_decay: 0.01  # Small weight decay
         epsilon: 1e-8
 
 lr_scheduler:
     scheduler: "constant_with_warmup"
     params:
         learning_rate: ${optimizer.params.learning_rate}
-        warmup_steps: 500
+        warmup_steps: 1000  # More warmup for larger model
 
 transport:
     path_type: "Linear"
@@ -140,18 +135,17 @@ transport:
     time_shifting_factor: 3.0
 
 training:
-    gradient_accumulation_steps: 4
+    gradient_accumulation_steps: 8
     batch_size: 1
     batch_size_mmu: 1
-    batch_size_mixed_modal: 2
+    batch_size_mixed_modal: 1  # 1 per GPU, effective = 1 * 2 GPUs * 8 accum = 16
     mixed_precision: "bf16"
     enable_tf32: True
     seed: 42
-    max_train_steps: 50000
+    max_train_steps: 82000  # ~3 epochs for 218K samples
     cond_dropout_prob: 0.1
     label_smoothing: 0.0
     max_grad_norm: 1.0
     ntp_coeff: 0.2
     flow_coeff: 1.0
     und_max_t0: 1.0
-
